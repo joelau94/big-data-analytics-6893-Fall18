@@ -7,10 +7,10 @@ import sys
 from tweepy import Stream, OAuthHandler
 from tweepy.streaming import StreamListener
 
-CONSUMER_KEY = 'gE2P0Bou7L26W2cRmAM6jHbLF'
-CONSUMER_SECRET = 'ahcMeUQRwLAmMLC3ADHJ04t4qIX5tqGfIQzqeQarGXIspdmBws'
-ACCESS_TOKEN = '913848142751256580-r3TJ0OZzJ3ifRWoSLbXIuAOHt94tEa2'
-ACCESS_TOKEN_SECRET = 'wYMNT7JK7VhqMEcKkKdaywwtU9eXVpqToX2za5kC2EmWH'
+CONSUMER_KEY = ''
+CONSUMER_SECRET = ''
+ACCESS_TOKEN = ''
+ACCESS_TOKEN_SECRET = ''
 
 TCP_IP = 'localhost'
 TCP_PORT = 9999

@@ -26,11 +26,6 @@ def sample(path, category, n):
   lines = [clean_text(line, category)
            for line in fin.readlines() if 'text' in json.loads(line)]
   records = random.sample(lines, n)
-  # records = map(lambda r: (r['text'].replace('\n', ' ').strip(), category),
-  #               map(json.loads,
-  #                   records)
-  #               )
-  # return list(records)
   return records
 
 

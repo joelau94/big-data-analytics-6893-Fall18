@@ -50,19 +50,6 @@ def train(alg, data, k, seed=0):
 
 
 def evaluate(data, model, alg, k):
-#   if alg == 'kmeans':
-#     print_centers(model)
-#     wssse = model.computeCost(data)
-#     print('Within Set Sum of Squared Errors = {}'.format(wssse))
-#   # elif alg == 'lda':
-#   #   ll = model.logLikelihood(data)
-#   #   lp = model.logPerplexity(data)
-#   #   print('The lower bound on log-likelihood:', ll)
-#   #   print('The upper bound on perplexity:', lp)
-#   #   topics = model.describeTopics(k)
-#   #   print('Top-weighted terms in clusters:')
-#   #   topics.show(truncate=False)
-#   elif alg == 'hier':
   if alg != 'gmm':
     print_centers(model)
     wssse = model.computeCost(data)
