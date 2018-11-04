@@ -1,0 +1,11 @@
+{
+  "name": "twitter-hashing-monitor",
+  "description": "monitor hashing in real time.",
+  "version": "0.0.1",
+  "private": true,
+  "dependencies": {
+    "socket.io": "*",
+    "express": "*",
+    "twit": "^2.2.5"
+  }
+}

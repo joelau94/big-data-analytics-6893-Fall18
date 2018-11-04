@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Big Data HW4 - zl2621</title>
+</head>
+<body>
+  <center></center>
+</body>
+<footer>
+<script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/1.7.2/jquery.js"></script>
+<script type="text/javascript" src="/socket.io/socket.io.js"></script>
+<script type="text/javascript" src="https://d3js.org/d3.v4.min.js"></script>
+<script type="text/javascript">
+$(document).ready(function () {
+  // initialization
+  var track_item = ["#food", "#photography", "#pets", "#funny",
+                    "#happybirthday", "#movies", "#foodporn",
+                    "#friends", "#bitcoin", "#ico"];
+  var count = {}
+  track_item.forEach(function (term) {
+    count[term] = 0
+  });
+
+  var w = 1000;
+  var h = 600;
+  var barPadding = 10;
+
+  var svg = d3.select("center")
+              .append("svg")
+              .attr("width", w)
+              .attr("height", h)
+
+  var dataset = Object.keys(count).map(function (key) {
+    return [count[key], key];
+  });
+
+  svg.selectAll("rect")
+     .data(dataset)
+     .enter()
+     .append("rect")
+     .attr("x", function (d, i) {
+       return i * (w / dataset.length);
+     })
+     .attr("y", function (d) {
+       return h - (d[0] * 4);
+     })
+     .attr("width", w / dataset.length - barPadding)
+     .attr("height", function (d) {
+       return d[0] * 4;
+     })
+     .attr("fill", function (d) {
+       return "rgb(0, 0, " + (d[0] * 10) + ")";
+     });
+
+  svg.selectAll("text")
+     .data(dataset)
+     .enter()
+     .append("text")
+     .text(function (d) {
+       return d[1] + ": " + d[0];
+     })
+     .attr("text-anchor", "middle")
+     .attr("x", function (d, i) {
+       return i * (w / dataset.length) +
+              (w / dataset.length - barPadding) / 2;
+     })
+     .attr("y", function (d) {
+       return h - (d[0] * 4) - barPadding;
+     })
+     .attr("font-family", "sans-serif")
+     .attr("font-size", "11px")
+     .attr("fill", "white");
+
+  // monitor stream
+  var socket = io.connect("http://104.196.214.115:5000");
+  socket.on("stream", function (data) {
+    // console.log(count)
+    count[data.hashtag] += 1;
+
+    var dataset = Object.keys(count).map(function (key) {
+      return [count[key], key];
+    });
+
+    svg.selectAll("rect")
+       .data(dataset)
+       .transition()
+       .attr("x", function (d, i) {
+         return i * (w / dataset.length);
+       })
+       .attr("y", function (d) {
+         return h - (d[0] * 4);
+       })
+       .attr("width", w / dataset.length - barPadding)
+       .attr("height", function (d) {
+         return d[0] * 4;
+       })
+       .attr("fill", function (d) {
+         return "rgb(0, 0, " + (d[0] * 10) + ")";
+       });
+
+    svg.selectAll("text")
+       .data(dataset)
+       .transition()
+       .text(function (d) {
+         return d[1] + ": " + d[0];
+       })
+       .attr("text-anchor", "middle")
+       .attr("x", function (d, i) {
+         return i * (w / dataset.length) +
+                (w / dataset.length - barPadding) / 2;
+       })
+       .attr("y", function (d) {
+         return h - (d[0] * 4) - barPadding;
+       })
+       .attr("font-family", "sans-serif")
+       .attr("font-size", "11px")
+       .attr("fill", "black");
+  }); // end socket.on
+}); //end document.ready
+</script>
+</footer>
+</html>
