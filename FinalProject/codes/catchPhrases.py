@@ -198,6 +198,7 @@ pricePositive = {
   'great prices',
   'reasonably priced',
   'reasonable price',
+  'reasonable prices',
 }
 
 priceNegative = {
