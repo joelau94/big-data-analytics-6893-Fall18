@@ -1,0 +1,313 @@
+
+1. run neo4j using docker
+
+docker run -d \
+    --publish=7474:7474 --publish=7687:7687 \
+    --volume=$HOME/neo4j/data:/data \
+    --volume=$HOME/neo4j/logs:/logs \
+    --volume=$HOME/neo4j/conf:/conf \
+    --volume=$HOME/neo4j/plugins:/plugins \
+    --volume=/home/yelpdata:/yelpdata \
+    --env=NEO4J_dbms_memory_pagecache_size=3G \
+    --env=NEO4J_dbms_memory_heap_max__size=9G \
+    --env=NEO4J_dbms_memory_heap_initial__size=9G \
+    --name my_neo4j neo4j:3.4
+
+2. install apoc and algo plugins for neo4j, please follow their official manuals
+
+In the neo4j console, run those SQL queries.
+
+3. define schema for important properties
+
+CALL apoc.schema.assert(
+{Category:['name']},
+{Business:['id'],User:['id'],Review:['id']});
+
+4. import business.json from the yelp dataset
+
+CALL apoc.periodic.iterate("
+CALL apoc.load.json('file:///yelpdata/downsample/business.json') YIELD value RETURN value
+","
+MERGE (b:Business{id:value.business_id})
+SET b += apoc.map.clean(value, ['attributes','hours','business_id','categories','address'],[])
+WITH b, value.categories as categories
+WITH b, split(categories, ',') as list_categories
+UNWIND list_categories as raw_category
+WITH b, toUpper(trim(raw_category)) as category
+MERGE (c:Category{id:category})
+MERGE (b)-[:IN_CATEGORY]->(c)
+",{batchSize: 10000, iterateList: true});
+
+5. import review.json from the yelp dataset
+
+CALL apoc.periodic.iterate("
+CALL apoc.load.json('file:///yelpdata/downsample/review.json')
+YIELD value RETURN value
+","
+MERGE (b:Business{id:value.business_id})
+MERGE (u:User{id:value.user_id})
+MERGE (r:Review{id:value.review_id})
+MERGE (u)-[:WROTE]->(r)
+MERGE (r)-[:REVIEWS]->(b)
+SET r += apoc.map.clean(value, ['business_id','user_id','review_id','text'],[0])
+",{batchSize: 10000, iterateList: true});
+
+6. import review.json from the yelp dataset
+
+CALL apoc.periodic.iterate("
+CALL apoc.load.json('file:///yelpdata/downsample/user.json')
+YIELD value RETURN value
+","
+MERGE (u:User{id:value.user_id})
+SET u += apoc.map.clean(value, ['friends','user_id'],[0])
+WITH u, value.friends as friends
+WITH u, split(friends, ',') as list_friends
+UNWIND list_friends as raw_friend
+WITH u, trim(raw_friend) as friend
+MERGE (u1:User{id:friend})
+MERGE (u)-[:FRIEND]-(u1)
+",{batchSize: 100, iterateList: true});
+
+7. detect user communities by louvain algorithm
+
+CALL algo.louvain('User', 'FRIEND',
+  {write:true, writeProperty:'community'})
+YIELD nodes, communityCount, iterations, loadMillis, computeMillis, writeMillis;
+
+8. show stats for user communities
+
+MATCH (c:User)
+WHERE exists(c.community)
+RETURN c.community, count(*) AS count
+ORDER BY count DESC
+
+9. show stats for restaurant categories
+
+MATCH (b:Business)-[:IN_CATEGORY]-(c:Category)
+RETURN c.id, count(*) AS count
+ORDER BY count DESC
+
+10. show stats for restaurant reviews based on categories
+
+MATCH (r:Review)-[:REVIEWS]-(b:Business)-[:IN_CATEGORY]-(c:Category)
+RETURN c.id, count(*) AS count
+ORDER BY count DESC
+
+part of result:
+
+AMERICAN (TRADITIONAL)  61512
+MEXICAN                 66576
+ITALIAN                 44572
+CHINESE                 18706
+JAPANESE                16061
+FAST FOOD               20817
+COFFEE & TEA            25296
+SALAD                   32599
+...
+
+11. delete users that don't have detailed profiles
+
+CREATE INDEX ON :User(name)
+
+call apoc.periodic.iterate("MATCH (u:User) WHERE NOT EXISTS (u.name) return u", "DETACH DELETE u", {batchSize:1000})
+yield batches, total return batches, total;
+
+12. show stats for user communities again
+
+MATCH (c:User)
+WHERE exists(c.community)
+RETURN c.community, count(*) AS count
+ORDER BY count DESC
+
+0	49098
+3	20367
+2	12612
+9	8044
+13	3414
+42	3270
+5	2790
+19	2587
+21	1684
+54	1470
+27	1310
+34	1265
+70	1174
+10	1118
+12	1113
+33	1103
+167	1047
+...
+
+13. calculate user's pagerank
+
+CALL algo.pageRank('User', 'FRIEND',
+  {iterations:20, dampingFactor:0.85, write: true,writeProperty:"pagerank"})
+YIELD nodes, iterations, loadMillis, computeMillis, writeMillis, dampingFactor, write, writeProperty;
+
+14. calculate user's betweenness
+
+CALL algo.betweenness('User','FRIEND', {direction:'out',write:true, writeProperty:'betweenness'})
+YIELD nodes, minCentrality, maxCentrality, sumCentrality, loadMillis, computeMillis, writeMillis;
+
+15. calculate user's closeness
+
+CALL algo.closeness('User', 'FRIEND', {write:true, writeProperty:'closeness'})
+YIELD nodes,loadMillis, computeMillis, writeMillis;
+
+
+16. show stats for pagerank
+
+avg: 0.2670382561548993
+
+MATCH (c:User)
+RETURN c.id ,c.pagerank as num, c.community
+ORDER BY num DESC LIMIT 50
+
+"PadmV2GEoA6mWpQUpPh7Ig"	114.87138049999997	2
+"eSlOI3GhroEtcbaD_nFXJQ"	105.68304199999999	2
+"zFYs8gSUYDvXkb6O7YkRkw"	92.54245850000002	2
+"i08JAic75yXlq4r2iiN4Iw"	89.645514	2
+"ZIOCmdFaMIF56FR-nWr_2A"	78.626964	2
+"Sxkag2soHkimplexM7eOBA"	67.13740349999999	2
+...
+
+17. show stats for betweenness
+
+avg: 54415.19272586654
+
+MATCH (c:User)
+RETURN c.id ,c.betweenness as num, c.community
+ORDER BY num DESC LIMIT 50
+
+"Pf22rlOdtqszHZxHB59vIQ"	364467064.55615485	2
+"bLbSNkLggFnqwNNzzq-Ijw"	345477735.04756254	2
+"4Pv_m5-lVD12Yph_KXqR3Q"	250789522.01910418	2
+"iMZ5b31T7KMkWgiEZYLf6g"	250721538.65878955	2
+...
+
+18. show stats for closeness
+
+MATCH (c:User)
+RETURN c.id ,c.closeness as num, c.community
+ORDER BY num DESC LIMIT 50
+
+avg: 54413.19272586654
+
+"Pf22rlOdtqszHZxHB59vIQ"	364467062.55615485	2
+"bLbSNkLggFnqwNNzzq-Ijw"	345477733.04756254	2
+"4Pv_m5-lVD12Yph_KXqR3Q"	250789520.01910418	2
+"iMZ5b31T7KMkWgiEZYLf6g"	250721536.65878955	2
+...
+
+19. calculate 1st degree social rating of reviews
+
+call apoc.periodic.iterate("MATCH (re1:Review) return re1", "
+MATCH p1=(u1:User)-[:WROTE]-(re1)-[:REVIEWS]-(b1:Business)
+MATCH p2=(u1)-[:FRIEND*1]-(u2:User)-[:WROTE]-(re2:Review)-[:REVIEWS]-(b1) where re2.date<re1.date
+with distinct re2 as reviews, re1
+with avg(reviews.stars) as ret, re1
+SET re1.social1rating = ret
+", {batchSize:1000})
+yield batches, total return batches, total;
+
+20. calculate 2nd degree social rating of reviews
+
+call apoc.periodic.iterate("MATCH (re1:Review) return re1", "
+MATCH p1=(u1:User)-[:WROTE]-(re1)-[:REVIEWS]-(b1:Business)
+MATCH p2=(u1)-[:FRIEND*1..2]-(u2:User)-[:WROTE]-(re2:Review)-[:REVIEWS]-(b1) where re2.date<re1.date
+with distinct re2 as reviews, re1
+with avg(reviews.stars) as ret, re1
+SET re1.social2rating = ret
+", {batchSize:1000})
+yield batches, total return batches, total;
+
+21. show average_stars of each community
+
+MATCH (c:User)
+WHERE exists(c.community)
+RETURN c.community, count(*) AS count, avg(c.average_stars)
+ORDER BY count DESC
+
+0	49098	3.641170516110658
+3	20367	3.8596965679776156
+2	12612	3.7980296542974985
+9	8044	3.8035542018896
+13	3414	3.7056707674282356
+42	3270	3.65005504587156
+5	2790	3.9590716845878053
+19	2587	3.8969230769230694
+21	1684	3.882980997624704
+54	1470	3.8440136054421767
+27	1310	3.88244274809161
+34	1265	3.839533596837947
+70	1174	3.877240204429302
+10	1118	3.935143112701254
+12	1113	3.8777358490566027
+33	1103	3.8493925657298282
+167	1047	3.8982712511938886
+...
+
+22. determine whether the restaurant favored by specific community
+
+call apoc.periodic.iterate("MATCH (b:Business) return b", "
+MATCH p=(u:User)-[:WROTE]-(re:Review)-[:REVIEWS]-(b) where u.community = [FILL_HERE]
+with distinct re as reviews, b
+with avg(reviews.stars) as ret, [FILL_HERE] as communityAvgStar ,b
+SET b.c[FILL_HERE]fav = true
+", {batchSize:500})
+yield batches, total return batches, total;
+
+23. set key opinion leaders (top 500 users with high pagerank)
+
+MATCH (c:User)
+RETURN c.id ,c.pagerank as num, c.community
+ORDER BY num DESC LIMIT 500
+
+with ["PadmV2GEoA6mWpQUpPh7Ig","eSlOI3GhroEtcbaD_nFXJQ","zFYs8gSUYDvXkb6O7YkRkw","i08JAic75yXlq4r2iiN4Iw","ZIOCmdFaMIF56FR-nWr_2A","Sxkag2soHkimplexM7eOBA","8DGFWco9VeBAxjqsuh1aSw","4ytH40fEIGg_wTYFuw2gag","uT-dE6exdthrLJ8LX3eJAQ","UUqGHQFu2tQDGv5r3yJWPA","KxGeqg5ccByhaZfQRI4Nnw","hE9FCBh0BPd2hEhTMNFp3A","ecyiv6zAAocMc5BhVfCSMg","_jjbwHWLFA5GjWFWGLj4ZQ","UmXzwFM2OkZHWJ5cJZlqkg","un2KUxPNvUOZDuUYoN-FQg","jwJtL8MOiMrJnNFmqyILbw","TE9OZ75WA7ZyMy8KbREILg","7ghHg2BjLgize61d70bwnA","NMmu4oC-YRqdi0WY9pV78g","QGgWWhEi5R4SLAKN-xwtNQ","rMsB82tk9uOB6JumPMgczg","EXKDLuYoZUKUNNNYA7TlGQ","InInjzaZxzQ8_suxZEAP5g","6rifWcJIpSDzg1llvpna2A","O_GWZZfQx7qv-n-CN7hsIA","yETN69bQ_T7ksid7lfg-FQ","8mujL5ZlIEou7GTA5g29nw","SsYDYuT792irBRoGpcOmrA","_By51okpUy8th5-13u69aQ","HtCPdVujYJAZF4FKr-C9Lg","dEk7mXM4npuDPmxrwPcEgQ","Q6Dcxo3_lNCzkqK7J3FL7A","i3uxV-4BqJLZsp9qGp5wVQ","hizGc5W1tBHPghM5YKCAtg","X0X3hiKv5CigUec1XYi_pg","-B-QEUESGWHPE_889WJaeg","DHQWSHz6b7Jsy-A04m1cIA","q6xgj7izoqXoTOWE2QyS1w","tJ1qdNdG0tZywbgH9uw9qw","j_j4DLfvNkhCRNWC0VBS9g","PeLGa5vUR8_mcsn-fn42Jg","1F5wbSbtUBzxS8IsM7fWsA","dIIKEfOgo0KqUfGQvGikPg","wxeTtPILiMl1L-yBB-D2HA","KcFxhQFcVlr4urPTsJAVXw","tgxOMt72pALx3_r2uZ92tQ","FZNRzY6m67fhlnNE8XglTQ","WiX-z39HRThSQmfQBW-UQA","9E35LB29RXJixo0563Iwew","ITa3vh5ERI90G_WP4SmGUQ","2HchhLgGj16aITZGVy0hqA","PjoSwmHj3QL5U5lDtjM3KA","h6n6dOMbrc1Cr9QIOz_PxA","qZB8BZ2ZzMF0VfIGhttu7w","gH3JDpHQfVcMEGaAaCJPjA","gpH_2Noa2OpzDcMUXtaETw","pKn_H1nkgrwJS6TuHODsvQ","OifzOYtyVuQjd2ODAlWTgw","t1_SlEbry6qd-Zcfm6taIw","WwW0bh9cXtyl4ruIKjlAqg","zgUyWA7vCQGtRa0JBokwwg","SRK_sUnvRmMwfexoL_DLQA","cufhYFdyrUAt4SWe-m0grQ","oGUrhMb_e2bPBKhdvqHIRQ","0G-QF457q_0Z_jKqh6xWiA","5UYjT5YDKSuApFax2t2eqg","3z7E1Gg001_1YdZZYDnO2A","lYp818T-xh8Ss79To5Azhw","9Lskp3870EP6fGbI9V6ZMQ","w7RP1MZad3YO7Vjgp3s3Dg","PcvbBOCOcs6_suRDH7TSTg","HJVlmn40GRHaxfiqhuHEBg","3XzhO2aJdvVtYhKOCJsPrg","uJTEn40MZuwQSwziAJxOSg","GSvZ1ZJmVqQA9O2NVfO1TQ","PV-0HCthlb_pxAcCvSUfMQ","PtkS6Jr6fTeJnns4Gu-uXA","djxnI8Ux8ZYQJhiOQkrRhA","0uEqdNTVj-I7zM83bbcgsg","PyqM7UvZLElMdlDr5EgPKQ","Uawd-HzV_Jq5suhCiR5R5w","pDfc2RILCn6ZwZjyUAeD4w","-QM5WxcSE0xf_rB-VkTlqw","mazb418ZHejOx_S3j784Cg","Sg0TMTIkaBXYGKMbEI2VnQ","BxV2pTVmYCW15gSZAPMFKQ","2pBd2nU6Nq3WlPKsWlY3HA","zlFj4sJmPwzS1WdEB0FnFQ","1UwJVPsIiQ1VpzRZhLftSw","EJ7ZhRHsMWj8du77LX34gw","h3RbCmM5JeVCtFgKS1vEDw","_tDb7UEeJS623b8RTjSIvg","9YRFLVFVbHGAJ1weFx5zqw","BFKqvtzw8W3GE0XvxsWLJg","GoFvLt_TIlIUwQld6SmU2w","Z16OsDnJl1aOkutLuEm7zQ","KZ_pmwNVmhlOOGvxdYc37g","JecVwE013vUjG35edSNzxA","Ku8QivE-t3pU-dLT4pyG2g","z9OyNAuEgDHZ81ZQ3KhweA","YttDgOC9AlM4HcAlDsbB2A","8hJM27VoDr3rrOqWSQfrLw","8l6HUVnyvhZmjoJeUC-hjA","yqa2qWN6acpmDuDL3U61UA","F78tJHr0qW6FsYBtWMmLpA","XF3ho4jKNzFy9PInhRbBWg","aHpOPIvhk1h5dK9AsXLmlg","Xwn64gTZJhpV9SkMUkmuzw","I_hZOak13ydnfXV1nJPDTg","-8KyX-3VrqGuHeQWKDJxxg","fM_UsuFAYu2TVUqJiYAKsg","f__9p6lo6hmwnAEh3yorsQ","0-kZyNiOvUecc5uN3k3Yuw","Azq2sUIP-QoUeCVQYl3Zkg","D1VBrc65U8gjbAMdJ5CbXw","4paWpLov6LjpsNNgE1fhSg","keQE5jr6dgAiJGzrpYdnYw","50V3UxV1yeHnnXKQWKD0pA","0EuVDbiDrSOnrZAoEVohPA","VWTcMS7sVldSDN8KruKx8Q","ohYnCSs6eTl7O6o3UySpgg","mLN1L_r8ZMrc5qsALwUuPA","0UI9KTPdtkwl9lMdMT-Sgg","d_TBs6J3twMy9GChqUEXkg","d7D4dYzF6THtOx9imf-wPw","Utrb2F17UK1cpR7OlW_o1g","KeuwC8E1238SP6xyKpBM6w","NeJLklFT4Ohig0uW9719bw","MwWO6axFPTCXqN0DAfUhIQ","-WYbVngIGDQ81MY12UtwnA","wrbrLjAgupNnS8FaTM1HVA","jrMxBHW3SlUGVGYWvPsHWA","84FuHcNTIIkkyMbO1I_gPA","0nOIH8qIMnmZdLCTemnRsw","8DX3pBJt96HqRxV8ACLdYA","qhIKkB6ib8rUSgej3yIRTQ","vnWKs2dgqDuR_yNI5qJG5g","7SuWEgp0Lbz5ob8ckEX75A","qewG3X2O4X6JKskxyyqFwQ","XNSyl47aXuPsvC5zXm5uhw","BuwzRmdVk0uu17qG49l37A","RBZ_kMjowV0t6_nv2UKaDQ","8SgjU2fID9VqKQooFt1DIQ","JUT0U3HTSB3kz9Wh7N0GqA","BxNBl3VrzLBAkwpJ3EUgXg","qFyuKO4AXqnb28Zvm-Ga0w","bDF4XoMF-bApT_YQD_duTg","xXFni1myxIQ-1n99R0bbvA","igll2PdsMvQHzJhzttrx1A","c8FOqDRhtL7q_YsQio6bog","gxVQZJVeKBUk7jEhSyqv-A","R5WcogaoAwjdHxrB2v5NsQ","XEHZoTDWjw3w-gcQyYIe4g","LTjMN76GiXoUn0EFHgJphw","9Y_k-ZZKO8o6MCAlK5hzHA","6OD2D--dBIHWn0XOXCP_uQ","tJlQFy645KRf5ffreMAqHg","EDTI4_y6QBum06aa5cNZ-Q","XQUJ2CArsyxe0p35iGH9LQ","an-ijVpGQxgiOBX9qTBOyQ","NZOTHK7fVn_4L966mk25EQ","4d13xAX2jp2EbGF8I9eZZw","SrF972IxsELYQ3eaWB5X4A","XtAeky1pltBbkAMskdF90g","sc8GhfwY5DVx8VhW49v-Cg","q6WC_ded0F01iIPkwYUijg","Q4Qfu-3vYtL1LRm2X1b0Gg","n2Qm4X7BvDWS6E2_VMurMg","pnTiEaqM4slogpY97n9Kvg","Y_2jMUKz6pvJ0JSWG3u10A","KJI4KET6cujPDHzej3pxjw","3vMxdUJCSZ17ltIFYrJn9Q","hyfurO25SIIAiK7NYDNDDw","Bh_cnWRz2x4AI9wIJRqETA","TlblmFiGEW0xyjpl9gFhGQ","r9tjKaqLvLKF7PvDnUsFnA","x7ypIc-61ys6dkdkf4vrXA","YXro7DYEzalWWD43Q1gkzg","W7FrTt9ZLkLvtY-zk5cAVA","WBp6Mw23UeQjvkgb0FTIrg","lMRXo4VGHhsiLdzhgN6mEQ","3-t_uaPKVQQmOUAIu7C-PA","l0-VQ8nA_oijpKlRB7dkow","ET8n-r7glWYqZhuR6GcdNw","HdrdiwMYkhWI49lmNPeziA","z18yraBGRdG7sarcEAonmQ","MlXwLd4oF1AJU4wPTsesIw","jQYIE9bjrh9EP-B5FXpqPw","HYgQXwQAW8QWvZz6KKTmJw","vWaG8_dVdoKnAvrcJWdEeA","PipGc4TdxurGizJ6CKmU7Q","5_ExoSXD52YIEx_W5jnumA","AHRrG3T1gJpHvtpZ-K0G_g","8S1FrVzT0tWluJ2gq08ygA","PcgtOrx8nNChB__ccEPPDw","FyaTmGH0GWdBWRAtYakW0g","M9rRM6Eo5YbKLKMG5QiIPA","kiKyT3FN1H3d3jSTU5I3zg","D9patliQtlm646P_fyiCaw","Oz0qgUdME7LqXxJEIZq0Pw","ctXFXk9-m6PCMoI-Nz2_XQ","sS8XArfnzcjdFX6aVezTRg","SluDFlr0v6bwztyr02pVDA","u1dJcoE5DrpDa-g1E4wzKg","no2kFt4TEEzZDVaM8haSDA","6ObFF8-uKnOAlXuSH4TlyQ","i15Mp7SYW48_ca_TTkhblg","nnaqt0CgxE1nbvs9mcLrug","D2ljL5ejuqpa4f8fnZ1qjw","GFyA9ULGAeD-xZEPto2y7A","PkNs-Rw6MHQfu6j5pBZMMw","BqE21d_vGACZFU2U8dCRSw","oDy20Czf5EXS6gu9vF1T9g","YmfwxHZPQrIPeO_3Ng4KJg","OP2AJx9pDcncUTTzvPCmnQ","c2gawNsQQdoD9YKJ84djxQ","e9V-hsaLlQIFvo5GnJIkbg","qaqkOxupLgwvi-tfGgNyRg","eMjSVlAbjvGAUa1i396nPQ","A2Z5lefsG9ymUAtNaae0CA","2Gy7OX3zFVfNeeHLhmpzJw","JRj8FttHYL2BD5kO8OguvA","CesoHpuchA8-i4Df5XbbLg","uWnVvgXhopXEPdEcI2vXrQ","vjUffR4WMrGYnwXTVBxv5g","PxzBS6FXePo9p__FRVLMSg","ISNbZn_lBKP7w1aGGaVyvw","u14FoXUXJgZw_4k_KwcUqw","5aPp3PnDs50CfWMapd7yEg","3mNz5nQFTIBQm0oU5mBR0w","0Rf4-ie0WJ2V6rxnHqQZ6w","uB5LnNSVHQYjYPpLf9lzuQ","y2Xj-NBnxG6mHMaF9f1d3w","Y_R3mRupfUQC_lbwP8_sZA","7bMJApc_Qsyr3r5y8s4_tA","N7E-CfqdME28dakWdEKNvw","LQUr_l2wzHAuy_oWtBFESQ","eKqnE-38y3aVzgECIzQksg","f-8BKEVPqiqRaNNmhjAU8Q","LaFPOJVEN0yuYCHDSg_WRg","3zczu4YDXk5M27xMQl-Few","_YUz6gZFJYbt3m7_Ta6KVQ","eK6FpEPv2urKpEjWwR45QQ","ocB1WhramMTkICc5sZ1bUQ","LdJEpl-Fw1QUeiIE4ehG8A","-bh7yPJ9ZhjL1TfxagXqnw","KGXWpnGr-KS9HAfV0YUDgg","p4gV7WhcU-ELtL4uc3epQg","rA97zeqOrUYuEM69n0Xn4w","CEoMgtYwcskmU6VOeDAwVw","H-TOTOwIZ41re32QWVcf-A","E_GAXhVA1_lVC2aFpMQElA","9Ms5wpxVloadWFvDbb77kg","4ZfcCa4m5RWvO4EFzfYm1A","YmE6xY-5nOOSDR9vH5GGoQ","VqBSNxY9nbGdUGZ5fnhudA","QIupIFy3jtHe0fk-vOWvVQ","_9WKSGfBn193Wl3vd7kt1A","sTcYq6goD1Fa2WS9MSkSvQ","5MCBLBxr10NLUKZ4AboAMg","4lxtNxRan35EBfVUG-fyIw","0wXNILLfalmhRVNIVzVVVA","ENWM-inIq18uToXawRmCbw","UlWDGR0QrBbdFsVY6ugocw","U4INQZOPSUaj8hMjLlZ3KA","rRrFcSEZOTw6iZagsIwTFQ","XiqziC8skzXUSc0UdNNdAA","FGVVHF2D1Xywl8BkVA7o2A","fw0tfNyeDhLhcpcgkeMpFQ","2VRkBZBS5FO_N7yBRWfaLA","asL1d04xS3y8YQtU5ota-g","Raxyghpfm6929KRdPgOYmA","Hyli6YWc-0PxRAerObzZIQ","hDiuDhttkIEt8_wVwufDvg","LWinqJdSeptUcP2jPvryhw","KQMzfaaI9jfo68S4CsCifA","XBJQ63IqeGadiZ-2MJLGCg","sPQR3avklMKfKz5fiumBbA","I0zmRw3Kp2ScJOasQOF9sQ","w1XmHv3bIT8o-5Ep1On9_w","qUGMYSGV24KD8QFCdGGIlQ","yP3U472W13-7NWPVd6t3ZA","WdwW_yi1xUxmynzckO977w","N-WO-n6-AyVzdROSzhx5rA","To6n-n4z6H1SMz7o5zYEsw","byS5I9HMlMqjiTrjqnCscg","LiJzaYCdoVyyhsAReSzkXw","5FAD2Yq7DLBQ_-ef1iDA-A","gru76BjkRY6UQVcw_yAxiQ","sJprizZfXS0-g4sON33EDA","nyFqLcDf5d8AHk3uvoZHnQ","nATwGyVFLrzBRoJzLKWBuQ","JnPIjvC0cmooNDfsa9BmXg","GZyXr9NGNkUCxhgSt7dzyQ","b6vXUJtW76_uguIeBthrdQ","hCBKnwAKN0hcu6OTzuCAEw","zhOub-pbWLTRBNQxhXbcuw","QJI9OSEn6ujRCtrX06vs1w","JWtZnHGrceh-NCGIzG3Zow","f1MFQxTZAWJnRQdrouLg_A","JT3A6T_7whMToRxTmy0Zrw","cp0zNS_4chviJdhrSbEdqA","Uo7BIfvcH5fToitssauySQ","1zfdRlzvd3SpuFEDoqKUWg","QuZbJquRtbY9O9JrB9NpxQ","aA5DgDHTYyH9HJ2Ahg6IKw","kXQuCiBgoIJLGrkxfiDU2Q","gBB5kMi-Xs3ub8lfZDCRbA","6urS-vMeMNMw1ogB577H7w","MkozW9lzbx16iW7Z3T4dQg","u0aFzHN2GzAq2czVKcDmqg","Cg68V7HOKzhyjf0kQ2m4gw","pjxgZ_tjfP4xibXL3jofPg","IBkNDCG9zKDbzUdbFFKpxQ","9WpNAgele6V6W-LFhCd6Xg","N_IFBJrVN5CVRNi4UmKf1g","UUEFqeWu8sRXQvi_4t1TIA","5QGB5MtbysZv_ugFLvjCKQ","NWuFF7-HjYE9dvt_xGbEhw","3jjiY5D7oIlKeiCIZGHQew","pL4NhW3rTokFr-CQh3Lzgg","bK6z_wVQKfQjahiljf0l6Q","xFJ5Ja8y40CdMa1sfC4-gg","LrkuATjnUC7i62ExOXmGcw","eCc5bRw6hBsky6BKtYSP3g","ViPgHo3Oh46ar-bW4BcAeg","jWZGeZtrpO2cddeD7FnNLQ","uJucNa2iF6Qdp3woEte73g","ySIC6HYqCRKUyuPCn8VOtQ","EwXTFlhKft8XR7rvLeLoYg","6xmBNYK7epiFGmRt0bBxHg","9IdTONbhKPkVp5Max20_iQ","cqNmg3qGdFTYJCGHQXC8zw","nXMMoDzXRByQiWH9cf-FAQ","oWd7wL340Z9JiGf5Wu_bSQ","sYauKfRBquRxDwHA1a8EsA","JdlWgkfQeRBCsgHidUiIHQ","vUbBLitXfn7aeaRCOoKjdg","AOlLg-7Ktg9EbSuW8L-Scg","lKPUyA6DveoWk-3zFrHA9w","TXJ59_oLDI4e8kDSvWmleQ","KWY0QyEXEMGh6xCB5oMUzg","4iOc4Fo-h6gZ-2zAJEM78g","MMf0LhEk5tGa1LvN7zcDnA","7pi5q0cT60nBNwlHV0wLKQ","qFKZoe-_3qxk-iCKp1qfaA","IYNfdOXUfWNwJHX2zs9nXw","GKBbQHSWiX0QfvdMCUkwcg","-ynxr1rMPKFiTG7KzNNE_Q","Sl_v841AAg7qa0SWLYG3xw","zCX64-zjirxR2Px0sJBLRg","W7DHyQlY_kXls2iXt-_2Ag","HYQoxBC1y1DGPq6pGP09Tw","iXGoQVfBXU0CrwrRBWXozA","C_LxqoDy2nwwTZX7XT5LHg","0XXIv9a0LWiaCjAkurjMMQ","koTE0f8F2P8dwfyn2AAGaA","JVM2ebglqYyxyCB0hlr5sw","74kn9e3oWkKqLgZxRXwkBg","ozUsNrw9QlEtz_JqN5PlMw","fjesiUlkAhrTPWaWne6kpg","LNooRhqlM6ebjgm5KT1KLA","lyNZkBDvM3Dd6_EdxWo2jA","oaaEXgQ3x51cXE3GTXrT1Q","R4S8mWSieSbwGsUEhRMbNQ","4ECIXWllFTxtJaj1cKOZWw","DK57YibC5ShBmqQl97CKog","dyhTHLIf6eWBvU78Y3T06A","ZdedxYb-QGXVu1KfRIWsfw","2Rh41EBjWI137N2m5VHJJA","F0Oco8PiWbkM3INpbIh1Pw","GlwuvUa-86Jb27P_mepdFg","Pf22rlOdtqszHZxHB59vIQ","iLTIV9oD4DgPJ-7Jy1Jltw","MFQ2r01_qQLZjzU9XAcp-Q","a4c1xbU7BMgGBJZvSfO3qA","hq6wwhgImByBXH4bnyY59Q","f4XaTJGGtRMdTcbuSB13jw","iLjMdZi0Tm7DQxX1C1_2dg","V_5qEY4-1YzO_vI88Tx5WQ","DSD0DgYKc7hxn0Nl2F3cdg","TUUSsAKrdzOG-2sfGRvd7g","UQFE3BT1rsIYrcDvu_XVow","lvzVuPBCjPDgJS8AmBpaDg","xpkTOYhQsOCHlIXb2ujXtg","0qHOB3OdcgOI1_V7oSle2g","gfHU-4ZzhMwdtBwu3NALWQ","9Rkt6CUxX7fe_y8ktrK1aA","YCYMIpa-O8FcMJY8tUpb3Q","J1w_rl49WOD2wVex2uoWYQ","frVBhLcVaeMm5Fbe_NzJIQ","xJmbvtlU2npgVl_bnbRY9A","NgDQZBE-hhYFfZzgFvpJog","wXSzeF0XoUm3P9MezcVKtQ","lrg2GY9V052QR6YU7JODEw","48WNeFgWiK0Sga7NfN2SQA","mfHxb6gpXEH6Jj-LTFHkPA","I4uvpuDaUC_kEw-bNuAaZA","NkVYcoaThHjOfTTgq6OdHQ","-TWmOCrqnTwfO5k04S3QrA","3MH98JxTJ4DaSy6bPkj-ng","sNln_M0m2Y5hZ3DUKASMWA","hr-jsk4GCTldqLnUjlc03Q","P3usQcIegPCl-cdH4IDirg","8GhnpZDfwvhOhaKTxieXqw","lB-zJsPGTpJo_Jdc3EYPhw","yh8_9Ix1wp9dekvyOZbilQ","5jZCm98_09LCqJL7WULqgg","lp0g7sHrBkrPsggbO4ltsA","7SN81BGKQSWcH-y1oh1k5Q","dKr6hR3sZvieiskkeGkmmw","wzyGNvArcpUjZauRWFrKHA","kW2dk1CWihmh3g7k9N2G8A","siSrMiAD_xaGUT9xATTZKw","P2-6fFaloQscwnrfcPBFAw","95edfkib57iP3mkciutSGQ","c_QTqSL4bU9FzNIXxgFH5A","SBK9WOv0xIkDcnn92Xjnng","KwqNfFX40qTPakzwqUBVzQ","OPyB9WlRleJqc_bHxpGbUw","q6OQf0YLiqk2oky-VnDH6g","tfYjRQudn5gGXJOe58ruQg","Ga-GgpzBhTqTTixqgAN6tg","5aZKlej3tq10qBFuP3q8eQ","dzj2MWE9HASv55fmezeLkw","-AFGZ3K6qVYOaDAPV1ZI_A","if9_GXxL7rrwW1e81lSxyg","IfKHh1RbkXNMoAZuFXa1rA","Si1HfKNc7SoTRfA2y9vfMg","SVeXDQUvhrNXM3FwbTy2-w","W9MPolPlUiUEXYfGnYiHEQ","yZdfEKXGAnEISaSMYTRPuQ","pKOFFr59PTY03cICQPlayQ","7yE9S70E7Vo-4aVbxonNYg","CVHGjL2hx-EsAvnTHJayYQ","zNaDJXGjGro-kwu37h4e3A","sB9W6Tbr1A-ERfUXwJxirQ","wTfb2nfzPIyFcYQArdPtuQ","rp4ctJtEe8_TnG81B7VKPQ","wEE-YMx5pmSuagLtNxMPKA","iAd8XaHxv05iXyEiZ62Ibw","NwcgkMuRi3U6w7Bv4FWuag","UwtKWnVGrqzA7FZ4kAKxVQ","j14WgRoU_-2ZE1aw1dXrJg","sYQyXDjGaJj7wfaqz5u8KQ","3mfOGv0puI7a4dU_iRXYxg","2-kjdWn-5W6pN_HY9Z8XjQ","7Co3bpAF96UuUhb-1FsOmw","c7pPoQPgSUZERW8XVfV0gQ","XMy-OTpVY8O1L-8w1zOKcw","e0lV0WyRCYbYs9k6chh8YA","rF_xEMpqOp1te33DS_c9vA","3ObxffHbp5Sn1oLTF7wPxA","XjWPjXKrB5LYkh5uGFoFGQ","KGsXnYHvYddGaL_jyl0DMQ","NZaqWpzV0USC_Kj7nDpiJA","2vr6CWiHO0gVoDp7Tdjr1g","OMEl_8PMsst9UVF5l0k7Sg","pBNPhXma9c1Fhhud09Sj8w","2HoYHTUjWfmY3vHruQlDhw","HJfuzbFTwREQJ13sUUzHWA","eBytDMXhIcjfcCfXgL4pgQ","ZB8aGsAgbeX3LiSlQ8dm5Q","WfePuaS_iXGNGU6bfDe3JQ","4uwMAdFVuX0_s5GM1EQyuA","lConjPFTZqz4zWELK_EJtw","iO_uwNHUU3xhuEggDKO23A","qb9kvGuavKng9adYvx-RMg","2-XLTj0Cfd81_XlmHo02Aw","lt7bNHl-TXziny4FETu8nA","XiFzYeOUdkL1HxVFlPsHSA","ExI15M-oXjHcF42-G1xv9w","_EU5MxIQ_nmdnnLoJSCvUw","gghhJjm75PwlSfBLUTysvw","g9BiZFgGXU70BeVJ7d_rHA","ABPnzKPWAoYzuoNn9bHq-w","Usvn6LvVXlZFcLWqFS-L5g","6jz_Yr6_AP2WWLbj9gGDpA","bYo4ftNH40IX138DUYu0PQ","SAC9IW6InrQHdUrroXWxpA","INxvh4Rixsdfzh6PcWc_pw","HUfeFqEHgfrAEFmc2oHO3g","0wVGMH5xRrjzq7jj8egKCQ","yFY8wveTclT1mRQxWAEewA","XKZFXht3jv39zPinMc6OIA","Dh1SIQHyonnAHwMIghnsJA","ODsM6-_BvHt6-cqNylJn7g","Asd53kNfHXAhBNTewdLq3g","Hqz_L-q1Ax34ihdSMIyB4A","TdSeeuT8QMQ7Q1XltdRNzQ","NwPnvTALYMNZgdiwHHkuAQ","UP8r9esbiCX_y68G5w2uZA","lJaMhVl641JJhTZhR3s_EQ","s2o_JsABvrZVm_T03qrBUw","bul7PvrGmZQLM1pin_nN5Q","4TOP2JHVeo_0520iFxQpug","nCqa_9EWbdPutMysI_nCfA","0ibm06KpYdnGL8Ga55w5RQ","qauuiHfIEz8oCDXeAlbG9Q"] as kols
+
+unwind kols as kol
+MATCH (u:User) where u.id=kol
+SET u.iskol = true
+
+----
+
+24. check every review whether it was influenced by key opinion leader
+
+call apoc.periodic.iterate("
+MATCH (re1:Review) return re1
+", "
+MATCH p1=(u1:User)-[:WROTE]-(re1)-[:REVIEWS]-(b1:Business)
+MATCH p2=(u1)-[:FRIEND*1]-(u2:User)-[:WROTE]-(re2:Review)-[:REVIEWS]-(b1) where re2.date<re1.date and u2.iskol=true
+SET re1.kolrev = true
+", {batchSize:1000})
+yield batches, total return batches, total;
+
+notes: 33116/376171 = 8.8% of reviews influenced by key opinion leader
+
+25. show graph visualization of examples of key opinion leader influences
+
+MATCH p1=(u1:User)-[:WROTE]-(re1:Review)-[:REVIEWS]-(b1:Business) where re1.id="5mcE0oOjonWMQNdl5W_RKg"
+MATCH p2=(u1)-[:FRIEND*1]-(u2:User)-[:WROTE]-(re2:Review)-[:REVIEWS]-(b1) where re2.date<re1.date and u2.iskol=true return p2, p1
+
+MATCH p1=(u1:User)-[:WROTE]-(re1:Review)-[:REVIEWS]-(b1:Business) where re1.id="p2EfYc3irRbCv6phe6LY0A"
+MATCH p2=(u1)-[:FRIEND*1]-(u2:User)-[:WROTE]-(re2:Review)-[:REVIEWS]-(b1) where re2.date<re1.date and u2.iskol=true return p2, p1
+
+MATCH p1=(u1:User)-[:WROTE]-(re1:Review)-[:REVIEWS]-(b1:Business) where re1.id="jQgOT2SJNmeXDG6OgfBt7A"
+MATCH p2=(u1)-[:FRIEND*1]-(u2:User)-[:WROTE]-(re2:Review)-[:REVIEWS]-(b1) where re2.date<re1.date and u2.iskol=true return p2, p1
+
+26. export user features
+
+MATCH (u:User)
+RETURN u.id as uid, u.community as community, u.elite as elite, u.closeness as closeness, u.betweenness as betweenness, u.pagerank as pagerank, u.average_stars as avgstar
+
+27. export restaurant features
+
+MATCH (b:Business)
+RETURN b.id as bid, b.postal_code as zipcode, b.stars as stars, b.c0fav as c0fav, b.c3fav as c3fav, b.c2fav as c2fav, b.c9fav as c9fav, b.c13fav as c13fav, b.c42fav as c42fav, b.c5fav as c5fav, b.c19fav as c19fav, b.c21fav as c21fav, b.c54fav as c54fav, b.c27fav as c27fav, b.c34fav as c34fav, b.c70fav as c70fav, b.c10fav as c10fav, b.c12fav as c12fav, b.c33fav as c33fav, b.c167fav as c167fav
+
+28. export review features
+
+MATCH (r:Review)
+RETURN r.id as rid, r.stars as star, r.useful as useful, r.kolrev as kolreview, r.social1rating as social1rating, r.social2rating as social2rating
+LIMIT 40
+
